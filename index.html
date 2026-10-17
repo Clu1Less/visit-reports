@@ -75,8 +75,8 @@
   .topbar-row{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);}
   .large-title{font-size:var(--text-2xl);font-weight:600;margin:var(--space-1) 0 0;letter-spacing:-.3px;line-height:1.15;}
   .topbar-sub{font-size:var(--text-sm);color:var(--ink-soft);margin-top:3px;font-weight:400;}
-  .btn-back{background:none;border:none;color:var(--accent);font-size:var(--text-lg);font-weight:400;
-    padding:var(--space-2) var(--space-1) var(--space-1) 0;margin:calc(var(--space-2) * -1) 0 0 calc(var(--space-1) * -1);display:block;}
+  .btn-back{background:none;border:none;color:var(--accent);font-size:var(--text-xl);font-weight:500;
+    padding:14px 32px 14px 8px;margin:-10px 0 0 -8px;min-height:48px;display:block;}
   .btn-back:active{opacity:.5;}
 
   .search-inline{flex:1;border:none;background:var(--fill);border-radius:var(--radius-sm);
@@ -146,6 +146,8 @@
   .bp-row input{flex:1;}
   .bp-row span{color:var(--ink-soft);}
 
+  input[type=date]{-webkit-appearance:none;appearance:none;display:block;width:100%;min-width:0;max-width:100%;min-height:50px;margin:0;overflow:hidden;}
+  .field-grid{grid-template-columns:repeat(auto-fill,minmax(min(220px,100%),1fr));}
   input[type=number]::-webkit-outer-spin-button,
   input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
   input[type=number]{-moz-appearance:textfield;appearance:textfield;}
@@ -320,12 +322,12 @@
   function backupNow(){
     var clean = state.reports.map(function(r){ var c=JSON.parse(JSON.stringify(r)); delete c.baseline; return c; });
     var payload = JSON.stringify({ app:"home-visit-reports", version:1, savedAt:new Date().toISOString(), reports:clean, settings:state.settings });
-    var name = "visit-reports-backup-"+todayISO()+".json";
+    var name = "visit-reports-backup.json";
     function markDone(){ state.settings.lastBackup = Date.now(); saveSettings(); render(); }
     try{
       var file = new File([payload], name, {type:"application/json"});
       if(navigator.canShare && navigator.canShare({files:[file]})){
-        navigator.share({files:[file], title:name}).then(markDone).catch(function(){});
+        navigator.share({files:[file]}).then(markDone).catch(function(){});
         return;
       }
       var a = document.createElement("a");
@@ -637,7 +639,7 @@
     }
     if(f.type==="time"){
       return '<div class="'+cls+'"><label>'+esc(label)+'</label><div class="time-row">'+
-        '<input type="time" data-field="'+f.key+'" value="'+esc(val)+'">'+
+        '<input type="text" inputmode="numeric" autocomplete="off" placeholder="HH:MM" maxlength="5" data-mask="time" data-field="'+f.key+'" value="'+esc(val)+'">'+
         (f.nowButton ? '<button data-action="time-now" data-field="'+f.key+'">Now</button>' : '')+
         '</div></div>';
     }
@@ -784,6 +786,11 @@
     var field = t.getAttribute("data-field");
     if(!field || state.view.type!=="form") return;
     if(t.tagName==="TEXTAREA") autoGrow(t);
+    if(t.getAttribute("data-mask")==="time"){
+      var dg = t.value.replace(/[^0-9]/g,"").slice(0,4);
+      t.value = dg.slice(0,2) + (dg.length>2 ? ":"+dg.slice(2) : "");
+      t.classList.remove("field-invalid");
+    }
     if(t.getAttribute("data-mask")==="date"){
       t.value = formatDateTextInput(t.value);
       t.classList.remove("field-invalid");
@@ -798,6 +805,11 @@
 
   app.addEventListener("focusout", function(e){
     var t = e.target;
+    if(t.getAttribute && t.getAttribute("data-mask")==="time"){
+      if(t.value && !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t.value)){ t.classList.add("field-invalid"); }
+      else { t.classList.remove("field-invalid"); }
+      return;
+    }
     if(t.getAttribute && t.getAttribute("data-mask")==="date"){
       if(t.value && !isValidDateText(t.value)){ t.classList.add("field-invalid"); }
       else { t.classList.remove("field-invalid"); }
@@ -968,6 +980,23 @@
   app.addEventListener("change", function(e){
     if(e.target && e.target.id==="restore-file" && e.target.files && e.target.files[0]){ restoreFrom(e.target.files[0]); }
   });
+
+  (function(){
+    var sx=0, sy=0, tracking=false;
+    document.addEventListener("touchstart", function(e){
+      var t=e.touches[0]; sx=t.clientX; sy=t.clientY;
+      tracking = sx < window.innerWidth*0.3 && !document.querySelector(".overlay") &&
+        !(e.target===document.activeElement && /input|textarea/i.test(e.target.tagName||""));
+    }, {passive:true});
+    document.addEventListener("touchend", function(e){
+      if(!tracking) return; tracking=false;
+      var t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy;
+      if(dx>80 && Math.abs(dy)<dx/2){
+        var b=document.querySelector('[data-action="back-from-form"],[data-action="back-to-clients"]');
+        if(b) b.click();
+      }
+    }, {passive:true});
+  })();
 
   if("serviceWorker" in navigator){ window.addEventListener("load", function(){ navigator.serviceWorker.register("sw.js").catch(function(){}); }); }
 
