@@ -250,7 +250,8 @@
       { key:"hygiene", label:"Hygiene", type:"textarea", full:true },
       { key:"nutrition", label:"Nutrition", type:"textarea", full:true },
       { key:"mobilityPain", label:"Mobility & pain", type:"textarea", full:true },
-      { key:"mentalHealth", label:"Mental health", type:"textarea", full:true }
+      { key:"mentalHealth", label:"Mental health", type:"textarea", full:true },
+      { key:"social", label:"Social", type:"textarea", full:true }
     ]},
     { id:"environment", title:"Environment", single:true, fields:[
       { key:"environment", label:"Environment", type:"textarea", full:true, noLabel:true }
@@ -455,6 +456,19 @@
     if(digits.length>4) out += "/"+year;
     return out;
   }
+  function ageText(v){
+    if(!v || !isValidDateText(v)) return "";
+    var p=v.split("/"), b=new Date(+p[2],+p[1]-1,+p[0]), n=new Date();
+    if(b>n) return "";
+    var yrs=n.getFullYear()-b.getFullYear(), m=n.getMonth()-b.getMonth();
+    if(m<0 || (m===0 && n.getDate()<b.getDate())) yrs--;
+    if(yrs<1){
+      var mo=(n.getFullYear()-b.getFullYear())*12+n.getMonth()-b.getMonth();
+      if(n.getDate()<b.getDate()) mo--;
+      return "Age "+Math.max(mo,0)+" mo";
+    }
+    return "Age "+yrs;
+  }
   function isValidDateText(v){
     var m = /^([0-9]{2})\/([0-9]{2})\/([0-9]{4})$/.exec(v);
     if(!m) return false;
@@ -648,7 +662,8 @@
         '<input type="number" inputmode="decimal" step="'+(f.step||"1")+'" data-field="'+f.key+'" value="'+esc(val)+'"></div>';
     }
     if(f.type==="date-text"){
-      return '<div class="'+cls+'"><label>'+esc(label)+'</label>'+
+      var agv = ageText(val);
+      return '<div class="'+cls+'"><label>'+esc(label)+' <span data-age-for="'+f.key+'" style="color:var(--accent);font-weight:600;">'+(agv?'\u00b7 '+agv:'')+'</span></label>'+
         '<input type="text" inputmode="numeric" autocomplete="off" placeholder="DD/MM/YYYY" maxlength="10" data-mask="date" data-field="'+f.key+'" value="'+esc(val)+'"></div>';
     }
     if(f.type==="text" && f.mapButton){
@@ -717,6 +732,7 @@
           var unit=f.unit?" "+f.unit:"";
           var v=d[f.key];
           if(f.key==="date") v=formatDate(v);
+          if(f.key==="dob" && ageText(v)) v = v+" ("+ageText(v)+")";
           lines.push(f.label+": "+(v||"")+(v&&f.unit?unit:""));
         }
       });
@@ -794,6 +810,8 @@
     if(t.getAttribute("data-mask")==="date"){
       t.value = formatDateTextInput(t.value);
       t.classList.remove("field-invalid");
+      var ag = app.querySelector('[data-age-for="'+field+'"]');
+      if(ag){ var at = ageText(t.value); ag.textContent = at ? "\u00b7 "+at : ""; }
     }
     var r = findReport(state.view.reportId);
     if(!r) return;
