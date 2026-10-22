@@ -552,13 +552,13 @@
       html += '<div class="empty-state">No clients match your search.</div>';
       return html;
     }
-    var todo = filtered.filter(function(r){ return !r.sent; });
-    var mailed = filtered.filter(function(r){ return r.sent; });
     function rowsFor(list){
     var html = "";
     groupReports(list).forEach(function(g){
       var last = g.reports[0];
       var sub = g.reports.length+' visit'+(g.reports.length===1?"":"s")+' \u00b7 last '+formatDate(last.data.date);
+      var toMail = g.reports.filter(function(r){ return !r.sent; }).length;
+      if(toMail) sub += ' \u00b7 '+toMail+' to mail';
       html += '<div class="row has-avatar" data-action="open-client" data-key="'+esc(g.key)+'">'+
         '<div class="avatar" style="background:'+colorForClient(g.key)+';">'+esc((g.name||"?").charAt(0).toUpperCase())+'</div>'+
         '<div class="row-main"><div class="row-title">'+esc(g.name)+'</div><div class="row-sub">'+esc(sub)+'</div></div>'+
@@ -567,14 +567,7 @@
     });
     return html;
     }
-    var out = "";
-    if(todo.length) out += '<div class="section-label">To mail</div><div class="grouped-list">'+rowsFor(todo)+'</div>';
-    if(mailed.length){
-      var open = state.showMailed || (state.search.text||"").trim();
-      out += '<div class="section-label" data-action="toggle-mailed" style="cursor:pointer;padding:12px 4px;">Mailed ('+mailed.length+') '+(open?'\u25be':'\u25b8')+'</div>';
-      if(open) out += '<div class="grouped-list">'+rowsFor(mailed)+'</div>';
-    }
-    return html + out;
+    return html + '<div class="grouped-list">'+rowsFor(filtered)+'</div>';
   }
 
   function renderClientView(key){
