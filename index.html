@@ -202,6 +202,7 @@
 <body>
 <div id="app"></div>
 
+<script src="jspdf.umd.min.js"></script>
 <script>
 (function(){
   "use strict";
@@ -322,7 +323,7 @@
 
   function backupNow(){
     var clean = state.reports.map(function(r){ var c=JSON.parse(JSON.stringify(r)); delete c.baseline; return c; });
-    var payload = JSON.stringify({ app:"home-visit-reports", version:1, savedAt:new Date().toISOString(), reports:clean, settings:state.settings });
+    var payload = JSON.stringify({ app:"home-visit-reports", version:2, savedAt:new Date().toISOString(), reports:clean, settings:state.settings });
     var name = "visit-reports-backup.json";
     function markDone(){ state.settings.lastBackup = Date.now(); saveSettings(); render(); }
     try{
@@ -498,7 +499,7 @@
     if(state.view.type==="clients") body = renderClientsList();
     else if(state.view.type==="client") body = renderClientView(state.view.clientKey);
     else body = renderForm(state.view.reportId);
-    document.getElementById("app").innerHTML = renderTopbar() + body + renderSettingsModal() + renderConfirmSheet();
+    document.getElementById("app").innerHTML = renderTopbar() + body + renderSettingsModal() + renderConfirmSheet() + renderQueueSheet();
     if(state.view.type==="form"){
       var areas = app.querySelectorAll("textarea");
       for(var i=0;i<areas.length;i++){ autoGrow(areas[i]); }
@@ -598,22 +599,36 @@
     html += '<div class="toolbar-row"><div class="toolbar-left"></div><div class="toolbar-right">'+
       '<button class="btn-fill" style="background:'+color+';" data-action="new-visit-for-client" data-key="'+esc(key)+'">'+ICON_PLUS_SM+'<span>New entry</span></button>'+
     '</div></div>';
-    html += '<div class="grouped-list">';
-    reports.forEach(function(r){
+    function reportRow(r){
       var d = r.data;
       var sub = [formatDate(d.date), (d.timeIn||d.timeOut ? (d.timeIn||"--")+"\u2013"+(d.timeOut||"--") : "")].filter(Boolean).join(" \u00b7 ");
-      html += '<div class="row" data-action="open-report" data-id="'+r.id+'">'+
-        '<div class="row-main"><div class="row-title">'+esc(sub||"No date set")+'</div>'+
-        (r.sent ? '<div class="row-sub sent">Mailed</div>' : '')+
-        '</div>'+
+      return '<div class="row" data-action="open-report" data-id="'+r.id+'">'+
+        '<div class="row-main"><div class="row-title">'+esc(sub||"No date set")+'</div></div>'+
         '<div class="row-actions">'+
-          '<button class="btn-chip accent'+(r.sent?" sent":"")+'" data-action="mail-report" data-id="'+r.id+'">'+ICON_MAIL_SM+'<span>'+(r.sent?"Mailed":"Mail")+'</span></button>'+
+          '<button class="btn-chip accent'+(r.sent?" sent":"")+'" data-action="mail-report" data-id="'+r.id+'">'+ICON_MAIL_SM+'<span>'+(r.sent?"Mail again":"Mail")+'</span></button>'+
           '<button class="btn-chip danger" data-action="ask-delete" data-id="'+r.id+'">'+ICON_TRASH+'<span>Delete</span></button>'+
         '</div>'+
         '<span class="chevron">&#8250;</span>'+
       '</div>';
-    });
-    html += '</div>';
+    }
+    var pending = reports.filter(function(r){ return !r.sent; });
+    var emailed = reports.filter(function(r){ return r.sent; });
+    if(pending.length){
+      html += '<div class="grouped-list">'+pending.map(reportRow).join("")+'</div>';
+    } else if(emailed.length){
+      html += '<div class="empty-state" style="padding:var(--space-4);">All visits have been emailed.</div>';
+    }
+    if(emailed.length){
+      var isOpen = !!(state.openFolders && state.openFolders[key]);
+      html += '<div class="grouped-list" style="margin-top:var(--space-4);">'+
+        '<div class="row" data-action="toggle-folder" data-key="'+esc(key)+'">'+
+          '<div class="row-main"><div class="row-title">\uD83D\uDCC1 Emailed already</div>'+
+          '<div class="row-sub">'+emailed.length+' report'+(emailed.length===1?"":"s")+'</div></div>'+
+          '<span class="chevron" style="display:inline-block;transform:rotate('+(isOpen?90:0)+'deg);">&#8250;</span>'+
+        '</div>'+
+        (isOpen ? emailed.map(reportRow).join("") : "")+
+      '</div>';
+    }
     return html;
   }
 
@@ -701,6 +716,7 @@
           '<label class="btn-chip" style="cursor:pointer;justify-content:center;width:100%;padding:16px;margin-top:8px;">Restore from a backup file<input type="file" id="restore-file" accept=".json,application/json" style="display:none"></label>'+
           '<div class="row-sub">'+(s.lastBackup? 'Last backup: '+new Date(s.lastBackup).toLocaleDateString() : 'No backup yet. Save one after each work day.')+'</div>'+
           '<div class="row-sub">Safari storage protection: '+(persistState===true?'on':'off. Add the app to your Home Screen.')+'</div></div>'+
+        '<button class="btn-primary full-width" data-action="save-settings">Done</button>'+
       '</div></div>';
   }
 
@@ -741,42 +757,216 @@
     return lines.join("\n");
   }
 
+  /* ---------- PDF report (one clean, form-style PDF per visit) ---------- */
+  function pdfClean(s){
+    return String(s==null?"":s)
+      .replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"')
+      .replace(/[\u2013\u2014]/g,"-").replace(/\u2026/g,"...").replace(/\u00a0/g," ")
+      .replace(/[^\u0009\u000A\u0020-\u00FF]/g,"");
+  }
+  function fieldText(r, f){
+    var d = r.data;
+    if(f.type==="bp"){
+      var sys=d.bpSystolic||"", dia=d.bpDiastolic||"";
+      return (sys||dia) ? sys+"/"+dia+" mmHg" : "";
+    }
+    var v = d[f.key];
+    if(!v) return "";
+    if(f.key==="date") v = formatDate(v);
+    if(f.key==="dob" && ageText(v)) v = v+" ("+ageText(v)+")";
+    if(f.unit) v = v+" "+f.unit;
+    return v;
+  }
+  function reportFileName(r){
+    var n = (r.data.name||"Unnamed").replace(/[^A-Za-z0-9 _-]/g,"").trim() || "Unnamed";
+    return "Visit Report - "+n+" - "+(formatDate(r.data.date||"").replace(/\//g,"-")||"no date")+".pdf";
+  }
+  function buildPdf(r){
+    var J = window.jspdf && window.jspdf.jsPDF;
+    if(!J) throw new Error("PDF library missing");
+    var doc = new J({unit:"mm", format:"a4"});
+    var W=210, H=297, M=14, CW=182, PAD=6, BOT=H-18, LH=4.6;
+    var TEAL=[15,133,119], INK=[28,28,30], GREY=[110,110,115], LIGHT=[160,160,165], LINE=[229,229,234];
+    function bg(){ doc.setFillColor(232,243,241); doc.rect(0,0,W,H,"F"); }
+    function setFill(c){ doc.setFillColor(c[0],c[1],c[2]); }
+    function setText(c){ doc.setTextColor(c[0],c[1],c[2]); }
+    bg();
+
+    /* title card */
+    setFill(TEAL); doc.roundedRect(M,M,CW,34,3,3,"F");
+    setFill([255,255,255]); doc.roundedRect(M,M+3,CW,31,3,3,"F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(20); setText(INK);
+    doc.text("Home Visit Report", M+PAD, M+16);
+    doc.setFontSize(12); setText(TEAL);
+    doc.text(pdfClean(r.data.name||"Unnamed"), M+PAD, M+23);
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); setText(GREY);
+    var sub = [formatDate(r.data.date||""), r.data.clinician ? "Clinician: "+r.data.clinician : ""].filter(Boolean).join("   |   ");
+    doc.text(pdfClean(sub), M+PAD, M+29.5);
+    var y = M+34+6;
+
+    SECTIONS.forEach(function(section){
+      /* build rows */
+      var rows = [], fields = section.fields, i = 0;
+      function makeCell(f, x, w){
+        var txt = pdfClean(fieldText(r,f));
+        if(section.single) txt = pdfClean(r.data[f.key]||"");
+        doc.setFont("helvetica","normal"); doc.setFontSize(10.5);
+        var lines = txt ? doc.splitTextToSize(txt, w) : [];
+        return { x:x, w:w, label: section.single ? "" : f.label, lines:lines, empty:!txt, emptyText: section.single ? "None noted" : "Not recorded" };
+      }
+      function cellH(c){
+        var n = Math.max(1, c.lines.length);
+        return (c.label ? 5 : 1.5) + n*LH + 3.5;
+      }
+      var innerW = CW-2*PAD, colW = (innerW-6)/2;
+      while(i<fields.length){
+        var f = fields[i];
+        if(f.full || section.single){
+          var c = makeCell(f, M+PAD, innerW);
+          if(c.lines.length>45){
+            for(var k=0;k<c.lines.length;k+=45){
+              var part = { x:c.x, w:c.w, label:(k===0?c.label:""), lines:c.lines.slice(k,k+45), empty:false };
+              rows.push({ cells:[part], h:cellH(part) });
+            }
+          } else rows.push({ cells:[c], h:cellH(c) });
+          i++;
+        } else {
+          var a = makeCell(f, M+PAD, colW), cells=[a];
+          var nf = fields[i+1];
+          if(nf && !nf.full){ cells.push(makeCell(nf, M+PAD+colW+6, colW)); i+=2; } else i++;
+          rows.push({ cells:cells, h:Math.max.apply(null, cells.map(cellH)) });
+        }
+      }
+
+      /* lay out rows on pages */
+      var TITLE_H = 11;
+      if(y + PAD + TITLE_H + rows[0].h + 3 > BOT){ doc.addPage(); bg(); y = M; }
+      var items = [{ title:section.title, h:TITLE_H }], used = TITLE_H, start = y;
+      function flush(){
+        setFill([255,255,255]); doc.roundedRect(M, start, CW, PAD+used+3, 2.5, 2.5, "F");
+        var cy = start+PAD;
+        items.forEach(function(it){
+          if(it.title){
+            doc.setFont("helvetica","bold"); doc.setFontSize(12.5); setText(TEAL);
+            doc.text(pdfClean(it.title), M+PAD, cy+4);
+            doc.setDrawColor(LINE[0],LINE[1],LINE[2]); doc.setLineWidth(0.3);
+            doc.line(M+PAD, cy+7, M+CW-PAD, cy+7);
+          } else {
+            it.cells.forEach(function(c){
+              var ty = cy+1;
+              if(c.label){
+                doc.setFont("helvetica","bold"); doc.setFontSize(8); setText(GREY);
+                doc.text(pdfClean(c.label), c.x, cy+3.5);
+                ty = cy+8.5;
+              } else ty = cy+4;
+              if(c.empty){
+                doc.setFont("helvetica","italic"); doc.setFontSize(10.5); setText(LIGHT);
+                doc.text(c.emptyText, c.x, ty);
+              } else {
+                doc.setFont("helvetica","normal"); doc.setFontSize(10.5); setText(INK);
+                doc.text(c.lines, c.x, ty, {lineHeightFactor:1.2});
+              }
+            });
+          }
+          cy += it.h;
+        });
+        y = start + PAD + used + 3 + 5;
+      }
+      rows.forEach(function(row){
+        if(start+PAD+used+row.h+3 > BOT){
+          flush(); doc.addPage(); bg(); y = M; start = y; items = []; used = 0;
+        }
+        items.push(row); used += row.h;
+      });
+      flush();
+    });
+
+    /* footer on every page */
+    var n = doc.getNumberOfPages();
+    for(var p=1;p<=n;p++){
+      doc.setPage(p);
+      doc.setFont("helvetica","normal"); doc.setFontSize(8); setText(GREY);
+      doc.text("Confidential patient information", M, H-8);
+      doc.text("Page "+p+" of "+n, W-M, H-8, {align:"right"});
+    }
+    return doc.output("blob");
+  }
+
+  /* ---------- Mail: share the PDF to Apple Mail ---------- */
+  function recipientList(){
+    var s = state.settings;
+    return [s.email1, s.email2].filter(Boolean);
+  }
+  function needRecipients(){
+    state.settingsOpen = true;
+    render();
+    alert("Add your email addresses first, then tap Mail again.");
+  }
+  /* done(true) when the report was handed to Mail or saved, done(false) when cancelled */
+  function sharePdf(r, done){
+    var to = recipientList();
+    var subject = "Home Visit Report - "+(r.data.name||"Unnamed")+" - "+formatDate(r.data.date||"");
+    var blob;
+    try{ blob = buildPdf(r); }catch(e){ alert("Could not make the PDF. Try again."); done(false); return; }
+    var file = new File([blob], reportFileName(r), {type:"application/pdf"});
+    /* put the addresses on the clipboard so they can be pasted into the To field */
+    try{ if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(to.join(", ")).catch(function(){}); } }catch(e){}
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({ files:[file], title:subject, text:subject })
+        .then(function(){ done(true); })
+        .catch(function(err){ done(false); });
+      return;
+    }
+    /* fallback: save the PDF, then open a mail draft with the addresses filled in */
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    window.location.href = "mailto:"+to.join(",")+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent("The PDF report is saved in your Downloads. Attach it to this email.");
+    done(true);
+  }
+
+  function markSent(r){ r.sent = true; r.updatedAt = Date.now(); saveReports(); }
+
   function mailReport(id){
     var r = findReport(id);
     if(!r) return;
-    var s = state.settings;
-    var to = [s.email1, s.email2].filter(Boolean).join(",");
-    if(!to){
-      state.settingsOpen = true;
-      render();
-      alert("Add your recipient emails first, then tap Mail again.");
-      return;
-    }
-    var subject = "Home Visit Report - "+(r.data.name||"Unnamed")+" - "+formatDate(r.data.date||"");
-    var body = reportToText(r);
-    window.location.href = "mailto:"+to+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
-    r.sent = true;
-    r.updatedAt = Date.now();
-    saveReports();
+    if(!recipientList().length){ needRecipients(); return; }
+    sharePdf(r, function(ok){ if(ok){ markSent(r); } render(); });
   }
 
+  /* one PDF per report: the app offers them one at a time */
   function mailAllUnsent(){
     var unsent = state.reports.filter(function(r){ return !r.sent; });
     if(unsent.length===0) return;
-    var s = state.settings;
-    var to = [s.email1, s.email2].filter(Boolean).join(",");
-    if(!to){
-      state.settingsOpen = true;
-      render();
-      alert("Add your recipient emails first, then try again.");
-      return;
-    }
+    if(!recipientList().length){ needRecipients(); return; }
     unsent.sort(function(a,b){ return a.updatedAt-b.updatedAt; });
-    var body = unsent.map(reportToText).join("\n\n----------\n\n");
-    var subject = "Home Visit Reports - "+unsent.length+" unsent report"+(unsent.length===1?"":"s");
-    window.location.href = "mailto:"+to+"?subject="+encodeURIComponent(subject)+"&body="+encodeURIComponent(body);
-    unsent.forEach(function(r){ r.sent=true; r.updatedAt=Date.now(); });
-    saveReports();
+    state.mailQueue = unsent.map(function(r){ return r.id; });
+    render();
+  }
+  function queueCurrent(){
+    while(state.mailQueue && state.mailQueue.length){
+      var r = findReport(state.mailQueue[0]);
+      if(r && !r.sent) return r;
+      state.mailQueue.shift();
+    }
+    state.mailQueue = null;
+    return null;
+  }
+  function renderQueueSheet(){
+    if(!state.mailQueue) return "";
+    var r = queueCurrent();
+    if(!r) return "";
+    var left = state.mailQueue.length;
+    return '<div class="overlay" data-action="queue-stop">'+
+      '<div class="sheet" data-action="stop">'+
+        '<div class="sheet-card">'+
+          '<div class="sheet-title">'+left+' report'+(left===1?"":"s")+' left to mail</div>'+
+          '<div class="sheet-sub"><strong>'+esc(r.data.name||"Unnamed")+'</strong> \u00b7 '+esc(formatDate(r.data.date||""))+'</div>'+
+          '<button class="sheet-btn cancel" data-action="queue-send">Mail this report</button>'+
+          '<button class="sheet-btn" data-action="queue-skip" style="color:var(--ink-soft);">Skip this one</button>'+
+        '</div>'+
+        '<div class="sheet-card"><button class="sheet-btn cancel" data-action="queue-stop">Stop</button></div>'+
+      '</div></div>';
   }
 
   var app = document.getElementById("app");
@@ -798,6 +988,8 @@
 
   app.addEventListener("input", function(e){
     var t = e.target;
+    if(t.id==="settings-email1"){ state.settings.email1 = t.value.trim(); saveSettings(); return; }
+    if(t.id==="settings-email2"){ state.settings.email2 = t.value.trim(); saveSettings(); return; }
     if(t.id==="search-text"){ state.search.text = t.value; scheduleSearchRender(); return; }
     var field = t.getAttribute("data-field");
     if(!field || state.view.type!=="form") return;
@@ -856,9 +1048,9 @@
     } else if(action==="new-visit-for-client"){
       var key = el.getAttribute("data-key");
       var prevList = reportsForClientKey(key);
-      var prev = prevList[0];
       var data = { date: todayISO() };
-      if(prev){ CARRY_FORWARD.forEach(function(k){ if(prev.data[k]) data[k]=prev.data[k]; }); }
+      /* take each fixed detail from the newest visit that has it filled in */
+      CARRY_FORWARD.forEach(function(k){ var v = getLatestValue(prevList, k); if(v) data[k]=v; });
       var nr = { id:newId(), createdAt:Date.now(), updatedAt:Date.now(), sent:false, data:data };
       nr.baseline = JSON.stringify(nr.data);
       state.reports.push(nr);
@@ -938,11 +1130,19 @@
 
     } else if(action==="mail-report"){
       mailReport(id);
-      render();
 
     } else if(action==="mail-unsent"){
       mailAllUnsent();
-      render();
+
+    } else if(action==="queue-send"){
+      var qr = queueCurrent();
+      if(qr){ sharePdf(qr, function(ok){ if(ok){ markSent(qr); state.mailQueue.shift(); } render(); }); }
+
+    } else if(action==="queue-skip"){
+      if(state.mailQueue){ state.mailQueue.shift(); } render();
+
+    } else if(action==="queue-stop"){
+      state.mailQueue = null; render();
 
     } else if(action==="time-now"){
       var field = el.getAttribute("data-field");
@@ -973,6 +1173,12 @@
       state.settings.textSize = el.getAttribute("data-value");
       saveSettings();
       applyTheme();
+      render();
+
+    } else if(action==="toggle-folder"){
+      var fk = el.getAttribute("data-key");
+      state.openFolders = state.openFolders || {};
+      state.openFolders[fk] = !state.openFolders[fk];
       render();
 
     } else if(action==="toggle-mailed"){
